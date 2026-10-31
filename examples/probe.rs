@@ -83,6 +83,37 @@ fn main() {
                 hex_encode(&orig), hex_encode(&val), w.map_err(|e| e.to_string()), after, r.map_err(|e| e.to_string()), fin
             );
         }
+        "gsweep" => {
+            // gsweep <type lo> <type hi> <action lo> <action hi>
+            // Write [type, action, FF] (left bud only), report anything the firmware
+            // keeps, then restore every original slot one at a time (some actions
+            // touch more than one slot).
+            let r: Vec<u8> = args[1..5].iter().map(|a| a.parse().unwrap()).collect();
+            let table = |b: &mut Buds| b.get_config(&[2]).unwrap().into_iter().next().map(|(_, v)| v).unwrap_or_default();
+            let orig = table(&mut b);
+            for t in r[0]..=r[1] {
+                for a in r[2]..=r[3] {
+                    let res = b.set_config(&[(2, vec![t, a, 0xFF])]);
+                    let now = table(&mut b);
+                    if now != orig {
+                        println!("type {t:3} action {a:3}: {} -> {}", hex_encode(&orig), hex_encode(&now));
+                        for slot in orig.chunks_exact(3) {
+                            b.set_config(&[(2, slot.to_vec())]).unwrap();
+                        }
+                        let back = table(&mut b);
+                        if back != orig {
+                            println!("  RESTORE FAILED: {}", hex_encode(&back));
+                            return;
+                        }
+                    } else if let Err(e) = res {
+                        if !e.to_string().contains("not_supported") {
+                            println!("type {t:3} action {a:3}: {e}");
+                        }
+                    }
+                }
+            }
+            println!("done; table {}", hex_encode(&table(&mut b)));
+        }
         _ => eprintln!("?"),
     }
 }

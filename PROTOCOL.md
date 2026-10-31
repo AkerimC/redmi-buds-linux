@@ -376,9 +376,9 @@ list (`DeviceModel.hasFunction`), not by the firmware.
 
 | id | feature | firmware response |
 |---|---|---|
-| 7 | EQ preset | **values 0–13 stored**, ≥14 → `param_error`. The app offers 0,1,5,6,7 (see the per-model EQ lists below) |
+| 7 | EQ preset | values 0–13 are stored and read back, ≥14 → `param_error`. **Only 0, 1, 5, 6, 7 change the sound** (the app's set). Selecting 2–4 or 8–13 leaves the previous curve playing, not even falling back to a default (checked by ear, 2026-10-31), so the firmware accepts those ids but has no handling for them |
 | 47 | low latency / game mode | supported: `01` reads back. Not hidden: the server's feature list for this model includes `FUNC_LOW_LATENCY` (3011) |
-| 2 | gestures | actions 0–5 and 8 work. **9 = take photo** is accepted and couples single tap and hold on that bud: setting either sets both, and clearing one resets the other to 0 (voice assistant). 6, 7, 10–13, ≥14 → `not_supported`. Slide (type 5) is acknowledged but not stored |
+| 2 | gestures | four slots: single (4), double (1), triple (2), hold (3); type 0 aliases single tap. Actions 0–5 and 8 work. **9 = take photo** is accepted; on single tap or hold it couples the two slots of that bud (setting either sets both, clearing one resets the other to 0 = voice assistant), on double or triple tap it is independent. Actions 6, 7, 10–13 → `not_supported`; 14–255 are silently ignored (full sweep over types 0–15). **No swipe:** type 5 (slide) and types 6–15 are acknowledged but never stored, and a left-bud swipe set to volume (11) or volume up (4) did nothing when tested by hand |
 | 4 | multipoint / dual connection | `not_supported` |
 | 8 | device name (not in the app's table) | readable (`Redmi Buds 6 Play`), writes ignored |
 | 55 | custom EQ (`01 0a 01 01 01 00 N [freq_be16 gain]…`) | ignored |
@@ -428,6 +428,12 @@ mode (77), codec headers (86, 119, 127), log mode (0xEEEE).
 
 The buds also start their own `AUTH_CHECK` against the host in every session,
 even when idle; the client answers it automatically.
+
+Touches are not reported over RCSP: the actions go out as ordinary media/volume
+commands over the audio profiles. What the buds *do* push unprompted is case
+state. Taking a bud out of the case produced a battery frame
+(`… e4 64 1e`: left 100 % charging, right 100 % not charging, case 30 %) and a
+`NOTIFY_DEVICE_CONFIG` for id 12 (`REMIND_LOST`, value `06`, in-case bits).
 
 ## Ground truth: the whole captured session
 
