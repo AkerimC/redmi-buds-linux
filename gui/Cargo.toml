@@ -1,0 +1,17 @@
+[package]
+name = "redmi-buds-gui"
+version = "1.0.0"
+edition = "2021"
+description = "GTK/libadwaita app for Redmi/Xiaomi buds"
+license = "MIT"
+repository = "https://github.com/creeperkafasi/redmi-buds-linux"
+
+[[bin]]
+name = "redmi-buds-gui"
+path = "src/main.rs"
+
+[dependencies]
+redmi-buds = { path = ".." }
+gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_7"] }
+async-channel = "2"

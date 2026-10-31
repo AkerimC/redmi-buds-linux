@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Redmi Buds
+Comment=Battery, sound and touch controls for Redmi/Xiaomi buds
+Exec=redmi-buds-gui
+Icon=audio-headphones
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=earbuds;headphones;bluetooth;xiaomi;redmi;eq;
+StartupWMClass=io.github.creeperkafasi.RedmiBuds

@@ -1,0 +1,20 @@
+[package]
+name = "redmi-buds"
+version = "1.0.0"
+edition = "2021"
+description = "Control Redmi/Xiaomi buds (JieLi RCSP) over Bluetooth RFCOMM"
+license = "MIT"
+repository = "https://github.com/creeperkafasi/redmi-buds-linux"
+
+# Deliberately zero dependencies: the Bluetooth socket is opened through raw
+# AF_BLUETOOTH FFI, so the binary builds offline with no supply chain.
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+
+# The GUI lives in its own crate so the CLI/library stays dependency-free.
+[workspace]
+members = [".", "gui"]
