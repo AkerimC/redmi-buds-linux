@@ -6,9 +6,9 @@ command-line tool.
 
 <img src="docs/screenshot.png" width="360" alt="The app showing battery, sound presets, touch controls and Find my buds">
 
-Tested on a **Redmi Buds 6 Play**. Other Xiaomi buds built on the same
-JieLi-based protocol (Redmi Buds 6 Active / 6 Lite, Buds 5, …) will probably
-work too, but their feature sets differ. Reports are welcome.
+Tested on a **Redmi Buds 6 Play** and a **Redmi Buds 6 Lite**. Other Xiaomi buds
+built on the same JieLi-based protocol (Redmi Buds 6 Active, Buds 5, …) will
+probably work too, but their feature sets differ. Reports are welcome.
 
 ## Features
 
