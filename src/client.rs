@@ -8,7 +8,10 @@ use std::process::Command;
 use crate::auth;
 use crate::bt::{parse_mac, Rfcomm};
 use crate::rcsp::{self, Frame, APP_EARPHONE, APP_MIUI};
-use crate::settings::{self, Gesture, GestureBinding, CFG_EQ, CFG_FIND, CFG_GESTURES, CFG_SERIAL};
+use crate::settings::{
+    self, Gesture, GestureBinding, CFG_ANC, CFG_EQ, CFG_FIND, CFG_GESTURES, CFG_NOISE_CYCLE,
+    CFG_SERIAL,
+};
 
 /// First paired device whose name looks like Xiaomi/Redmi buds, via `bluetoothctl`.
 pub fn find_paired_buds() -> Option<String> {
@@ -401,10 +404,12 @@ impl Buds {
     }
 
     pub fn set_eq(&mut self, preset: u8) -> io::Result<()> {
-        if preset > 7 {
+        // The firmware stores 0..13, unnamed slots included, and the per-model
+        // preset lists differ (the 6 Lite adds 10, "Personalized").
+        if preset > 13 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "EQ preset must be 0..7",
+                "EQ preset must be 0..13",
             ));
         }
         self.set_config(&[(CFG_EQ, vec![preset])])
@@ -423,8 +428,27 @@ impl Buds {
         self.set_config(&[(CFG_GESTURES, value)])
     }
 
-    pub fn serial(&mut self) -> io::Result<Option<String>> {
+    /// Noise-control mode and level (config id 11), as stored by the buds.
+    pub fn get_anc(&mut self) -> io::Result<Option<(u8, u8)>> {
+        Ok(self.get_one(CFG_ANC)?.as_deref().and_then(settings::decode_anc))
+    }
+
+    /// Switch the noise-control mode. `level` is kept as it is when `None`.
+    pub fn set_anc(&mut self, mode: u8, level: Option<u8>) -> io::Result<()> {
+        let current = self.get_anc()?.map(|(_, l)| l).unwrap_or(0);
+        let value = settings::encode_anc(mode, level.unwrap_or(current));
+        self.set_config(&[(CFG_ANC, value)])
+    }
+
+    /// Modes the long-press cycles through, per side (config id 10 bitmask).
+    pub fn get_noise_cycle(&mut self) -> io::Result<Option<(u8, u8)>> {
         Ok(self
+            .get_one(CFG_NOISE_CYCLE)?
+            .filter(|v| v.len() >= 2)
+            .map(|v| (v[0], v[1])))
+    }
+
+    pub fn serial(&mut self) -> io::Result<Option<String>> {        Ok(self
             .get_one(CFG_SERIAL)?
             .map(|v| String::from_utf8_lossy(&v).into_owned()))
     }

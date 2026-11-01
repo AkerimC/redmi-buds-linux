@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use redmi_buds::auth;
 use redmi_buds::client::{find_paired_buds, Buds};
 use redmi_buds::rcsp;
-use redmi_buds::settings::{self, Gesture};
+use redmi_buds::settings::{self, Gesture, NoiseMode};
 
 const USAGE: &str = "\
 redmi-buds - control Redmi/Xiaomi buds over Bluetooth RFCOMM
@@ -26,8 +26,11 @@ COMMANDS:
     info              device name, IDs and battery
     battery           battery levels
     eq get            read the EQ preset (config id 7)
-    eq set <0-7>      set the EQ preset (0 balanced, 1 vocal, 5 bass,
-                      6 treble, 7 volume boost)
+    eq set <0-13>     set the EQ preset (0 balanced, 1 vocal, 5 bass,
+                      6 treble, 7 volume, 10 personalized)
+    anc get           noise control mode and level (config id 11)
+    anc set <MODE> [LEVEL]
+                      MODE: off, noise, transparency; LEVEL 0-2 (default: keep)
     gesture get       show what each tap/hold does
     gesture set <single|double|triple|long> <left|right|both> <ACTION>
                       ACTION: none play prev next vol+ vol- assistant, or an id
@@ -41,6 +44,8 @@ enum Cmd {
     Info,
     Battery,
     EqGet,
+    AncGet,
+    AncSet(u8, Option<u8>),
     EqSet(u8),
     Get(Vec<u16>),
     Set(u16, Vec<u8>),
@@ -122,13 +127,30 @@ fn parse_args() -> Result<Opts, String> {
         "eq" => match args.get(1).map(String::as_str) {
             Some("get") => Cmd::EqGet,
             Some("set") => {
-                let v = args.get(2).ok_or("eq set needs a preset 0..7")?;
-                Cmd::EqSet(v.parse::<u8>().map_err(|_| "preset must be 0..7")?)
+                let v = args.get(2).ok_or("eq set needs a preset 0..13")?;
+                Cmd::EqSet(v.parse::<u8>().map_err(|_| "preset must be 0..13")?)
             }
             _ => return Err("usage: eq get | eq set <0-7>".into()),
         },
-        "gesture" => match args.get(1).map(String::as_str) {
-            Some("get") => Cmd::GestureGet,
+        "anc" => {
+            let usage = "usage: anc get | anc set <off|noise|transparency> [level 0-2]";
+            match args.get(1).map(String::as_str) {
+                Some("get") => Cmd::AncGet,
+                Some("set") => {
+                    let mode = args
+                        .get(2)
+                        .and_then(|s| NoiseMode::parse(s))
+                        .ok_or(usage)?;
+                    let level = match args.get(3) {
+                        Some(v) => Some(v.parse::<u8>().map_err(|_| "level must be 0-2")?),
+                        None => None,
+                    };
+                    Cmd::AncSet(mode as u8, level)
+                }
+                _ => return Err(usage.into()),
+            }
+        }
+        "gesture" => match args.get(1).map(String::as_str) {            Some("get") => Cmd::GestureGet,
             Some("set") => {
                 let usage = "usage: gesture set <single|double|triple|long> <left|right|both> <ACTION>";
                 let g = args.get(2).and_then(|s| Gesture::parse(s)).ok_or(usage)?;
@@ -292,6 +314,39 @@ fn run(opts: &Opts) -> Result<(), String> {
         Cmd::Battery => {
             let levels = buds.battery().map_err(|e| e.to_string())?;
             println!("{}", fmt_battery(&levels));
+        }
+        Cmd::AncGet => {
+            let anc = buds.get_anc().map_err(|e| e.to_string())?;
+            match anc {
+                Some((mode, level)) => {
+                    let name = NoiseMode::from_id(mode).map_or("<unknown>", NoiseMode::name);
+                    let cycle = buds
+                        .get_noise_cycle()
+                        .ok()
+                        .flatten()
+                        .map(|(l, r)| {
+                            let names = settings::noise_cycle_names(l.min(r));
+                            names.join(" / ")
+                        })
+                        .unwrap_or_default();
+                    println!("anc mode {mode} ({name})  level {level}");
+                    if !cycle.is_empty() {
+                        println!("long-press cycles: {cycle}");
+                    }
+                }
+                None => println!("anc (absent)"),
+            }
+        }
+        Cmd::AncSet(mode, level) => {
+            buds.set_anc(*mode, *level).map_err(|e| e.to_string())?;
+            let anc = buds.get_anc().map_err(|e| e.to_string())?;
+            match anc {
+                Some((m, l)) => println!(
+                    "anc set to {m} ({}) level {l}",
+                    NoiseMode::from_id(m).map_or("<unknown>", NoiseMode::name)
+                ),
+                None => println!("anc write sent"),
+            }
         }
         Cmd::EqGet => {
             let preset = buds.get_eq().map_err(|e| e.to_string())?;

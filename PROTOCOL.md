@@ -254,6 +254,12 @@ entry as:
 So `e4 e4 32` = left 100 % (charging), right 100 % (charging), case 50 %.
 **Verified live** against the buds.
 
+The third byte is only meaningful while the buds sit in the case. On the Buds 6
+Lite the same read gives `e1 e3 27` (97 %/99 % charging, case 39 %) docked but
+`61 63 ff` undocked: the firmware reports `0xFF` for the case as soon as the buds
+are out, and the earphone app then hides the case column entirely. So "case
+unknown" is the normal state when the buds are being worn, not a read failure.
+
 Type 2 (`quantity`) is a separate single value and is not what the app displays.
 
 ## Device config (0xF2 / 0xF3 / 0xF4)
@@ -286,8 +292,8 @@ Observed values and their encodings:
 | 3 | auto-answer | `00` |
 | 7 | **sound effect / EQ preset** | one byte. App names: 0 balanced, 1 vocal enhancement, 5 bass boost, 6 treble boost, 7 volume boost (`SoundEffectExtKt`). 2–4 are accepted but unnamed |
 | 9 | **find device (ring)** | `[state, deviceType]`; state 1 = ring, 0 = stop; deviceType 1 left, 2 right, 3 both. Used by the app's Find Device screen instead of opcode 0x42 |
-| 10 | long-press noise cycle | `00 00` |
-| 11 | ANC state + level | `00 00` |
+| 10 | long-press noise cycle | `00 00` on the 6 Play; `07 07` on the 6 Lite: one bitmask byte per side, bit 0 offline, bit 1 ANC, bit 2 transparency |
+| 11 | ANC state + level | `00 00` on the 6 Play (ignored); on the 6 Lite `[mode, level]`, see below |
 | 37 | adaptive ANC | `00` |
 | 39 | serial number | ASCII, `<5 digits>/<14 alphanumerics>` |
 | 40 | time | 4 bytes, Unix-ish (`6a e5 ea 70`) |
@@ -301,6 +307,36 @@ Observed values and their encodings:
 58 notify sound, 59 personalized noise reduction, 60/62 ear-canal fit,
 72 adaptive volume, 74 bluetooth info, 76 app country, 103 commuting immerse,
 114/115 case sounds, 120 translate, 161 notification volume.
+
+### Noise control (verified on the Buds 6 Lite, 2026-11-01)
+
+Config id 11 holds `[mode, level]`:
+
+| value | mode (earphone app 1.38.0i) |
+|---|---|
+| 0 | Off |
+| 1 | Noise cancelling |
+| 2 | Transparency |
+| 3 | stored by the firmware, no such mode in the app |
+
+The level byte is a second axis: the firmware stores 0–2 for modes 1 and 2, and
+forces it back to 0 while the mode is 0. The app's level names in 1.38.0i
+(`ANC_LEVEL_NOISE_ADAPTIVE/ANTI_WIND/BALANCE/COMFORTABLE/DEEP/DEEP_PLUS`,
+`ANC_LEVEL_TRANSPARENT_*`) show the level is model- and firmware-specific, so a
+client should treat it as an opaque 0–2 knob rather than guess which is which.
+
+How this was pinned down: change the mode in the earphone app, then read id 11
+from the host that takes the control channel next. Tapping "noise cancelling"
+writes `01 00`, "transparency" `02 00`, "off" `00 00`; writes from the host are
+stored and applied immediately, and the app shows whatever the host wrote.
+
+Two traps:
+
+- The mode is not reported anywhere else. `GET_DEVICE_RUN_INFO` attribute `0x0b`
+  stays `00` in all three modes on the 6 Lite, and no `NOTIFY_DEVICE_CONFIG`
+  frame is sent on a change, so poll config id 11 instead of listening.
+- The app refuses to switch modes while the buds sit in the case (the taps do
+  nothing), so test or script the change with the buds outside it.
 
 ## Firmware capabilities, probed (2026-10-31)
 
@@ -326,7 +362,7 @@ list (`DeviceModel.hasFunction`), not by the firmware.
 | 4 | multipoint / dual connection | `not_supported` |
 | 8 | device name (not in the app's table) | readable (`Redmi Buds 6 Play`), writes ignored |
 | 55 | custom EQ (`01 0a 01 01 01 00 N [freq_be16 gain]…`) | ignored |
-| 3, 5, 6, 10–13, 29, 36, 37, 41, 54, 58–60, 72, 89, 96, 97, 100, 102–104, 115, 122, 126, 161 | auto-answer, fit test, ANC, call listener, spatial, adaptive volume, … | ignored |
+| 3, 5, 6, 10–13, 29, 36, 37, 41, 54, 58–60, 72, 89, 96, 97, 100, 102–104, 115, 122, 126, 161 | auto-answer, fit test, ANC, call listener, spatial, adaptive volume, … | ignored on the 6 Play (no ANC hardware); id 11 works on the 6 Lite (see above) |
 
 ### EQ preset ids across the product line
 
