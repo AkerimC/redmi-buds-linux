@@ -31,6 +31,7 @@ pub struct Snapshot {
     pub eq: Option<u8>,
     /// Noise-control mode and level (config id 11).
     pub anc: Option<(u8, u8)>,
+    pub has_anc: bool,
     pub gestures: Vec<GestureBinding>,
     pub serial: Option<String>,
     pub mac: String,
@@ -55,11 +56,14 @@ fn snapshot(buds: &mut Buds, mac: &str) -> std::io::Result<Snapshot> {
     } else {
         info.multi_battery
     };
+    let noise_cycle = buds.get_noise_cycle().unwrap_or(None);
+    let has_anc = noise_cycle.map(|(l, r)| l != 0 || r != 0).unwrap_or(false);
     Ok(Snapshot {
         name: info.name.unwrap_or_else(|| "Buds".into()),
         battery,
         eq: buds.get_eq()?,
         anc: buds.get_anc()?,
+        has_anc,
         gestures: buds.get_gestures()?,
         serial: buds.serial()?,
         mac: mac.to_string(),

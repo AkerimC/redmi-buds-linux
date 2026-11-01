@@ -72,6 +72,7 @@ pub fn opcode_name(op: u8) -> &'static str {
         0x03 => "REBOOT_DEVICE",
         0x04 => "NOTIFY_DEVICE_APP_INFO",
         0x06 => "DISCONNECT",
+        0x08 => "SET_TARGET_INFO",
         0x09 => "GET_DEVICE_RUN_INFO",
         0x42 => "FIND_DEVICE",
         0x50 => "AUTH_CHECK",

@@ -40,6 +40,7 @@ COMMANDS:
     selftest          verify the auth transform against hardware vectors
 ";
 
+#[derive(Debug, PartialEq, Eq)]
 enum Cmd {
     Info,
     Battery,
@@ -56,6 +57,7 @@ enum Cmd {
     Help,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 struct Opts {
     mac: Option<String>,
     channel: Option<u8>,
@@ -74,7 +76,15 @@ fn parse_u16(s: &str) -> Result<u16, String> {
 }
 
 fn parse_args() -> Result<Opts, String> {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from<I, T>(args: I) -> Result<Opts, String>
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let mut args: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
     if args.is_empty() {
         return Err("no command given".into());
     }
@@ -128,9 +138,13 @@ fn parse_args() -> Result<Opts, String> {
             Some("get") => Cmd::EqGet,
             Some("set") => {
                 let v = args.get(2).ok_or("eq set needs a preset 0..13")?;
-                Cmd::EqSet(v.parse::<u8>().map_err(|_| "preset must be 0..13")?)
+                let n = v.parse::<u8>().map_err(|_| "preset must be 0..13")?;
+                if n > 13 {
+                    return Err("preset must be 0..13".into());
+                }
+                Cmd::EqSet(n)
             }
-            _ => return Err("usage: eq get | eq set <0-7>".into()),
+            _ => return Err("usage: eq get | eq set <0-13>".into()),
         },
         "anc" => {
             let usage = "usage: anc get | anc set <off|noise|transparency> [level 0-2]";
@@ -142,7 +156,13 @@ fn parse_args() -> Result<Opts, String> {
                         .and_then(|s| NoiseMode::parse(s))
                         .ok_or(usage)?;
                     let level = match args.get(3) {
-                        Some(v) => Some(v.parse::<u8>().map_err(|_| "level must be 0-2")?),
+                        Some(v) => {
+                            let n = v.parse::<u8>().map_err(|_| "level must be 0-2")?;
+                            if n > 2 {
+                                return Err("level must be 0-2".into());
+                            }
+                            Some(n)
+                        }
                         None => None,
                     };
                     Cmd::AncSet(mode as u8, level)
@@ -417,5 +437,70 @@ fn main() -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_anc_commands() {
+        let opts = parse_args_from(["anc", "get"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::AncGet);
+
+        let opts = parse_args_from(["anc", "set", "off"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::AncSet(0, None));
+
+        let opts = parse_args_from(["anc", "set", "noise"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::AncSet(1, None));
+
+        let opts = parse_args_from(["anc", "set", "transparency", "2"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::AncSet(2, Some(2)));
+
+        let opts = parse_args_from(["anc", "set", "kapali"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::AncSet(0, None));
+
+        // Rejection of invalid level (>2)
+        let err = parse_args_from(["anc", "set", "noise", "3"]).unwrap_err();
+        assert!(err.contains("level must be 0-2"));
+
+        let err = parse_args_from(["anc", "set", "noise", "foo"]).unwrap_err();
+        assert!(err.contains("level must be 0-2"));
+
+        // Invalid mode
+        let err = parse_args_from(["anc", "set", "unknown"]).unwrap_err();
+        assert!(err.contains("usage: anc get | anc set"));
+    }
+
+    #[test]
+    fn parse_eq_commands() {
+        let opts = parse_args_from(["eq", "get"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::EqGet);
+
+        let opts = parse_args_from(["eq", "set", "0"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::EqSet(0));
+
+        let opts = parse_args_from(["eq", "set", "10"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::EqSet(10));
+
+        let opts = parse_args_from(["eq", "set", "13"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::EqSet(13));
+
+        // 14 is out of range
+        let err = parse_args_from(["eq", "set", "14"]).unwrap_err();
+        assert!(err.contains("preset must be 0..13"));
+    }
+
+    #[test]
+    fn parse_flags_and_channel() {
+        let opts = parse_args_from(["--channel", "29", "--verbose", "anc", "get"]).unwrap();
+        assert_eq!(opts.channel, Some(29));
+        assert!(opts.verbose);
+        assert_eq!(opts.cmd, Cmd::AncGet);
+
+        let opts = parse_args_from(["--mac", "11:22:33:44:55:66", "battery"]).unwrap();
+        assert_eq!(opts.mac, Some("11:22:33:44:55:66".into()));
+        assert_eq!(opts.cmd, Cmd::Battery);
     }
 }

@@ -261,15 +261,17 @@ mod tests {
     fn anc_encoding() {
         assert_eq!(decode_anc(&[1, 0]), Some((1, 0)));
         assert_eq!(decode_anc(&[2]), Some((2, 0)));
+        assert_eq!(decode_anc(&[0, 0]), Some((0, 0)));
+        assert_eq!(decode_anc(&[3, 1]), Some((3, 1))); // Unknown modes preserved
         assert_eq!(decode_anc(&[]), None);
+
         // Level is meaningless while the mode is off.
+        assert_eq!(encode_anc(0, 0), vec![0, 0]);
         assert_eq!(encode_anc(0, 2), vec![0, 0]);
+        assert_eq!(encode_anc(1, 0), vec![1, 0]);
         assert_eq!(encode_anc(1, 2), vec![1, 2]);
-        assert_eq!(NoiseMode::parse("anc"), Some(NoiseMode::Cancelling));
-        assert_eq!(NoiseMode::parse("transparency"), Some(NoiseMode::Transparency));
-        assert_eq!(NoiseMode::from_id(5), None);
-        assert_eq!(noise_cycle_names(0x07).len(), 3);
-        assert_eq!(noise_cycle_names(0x03), vec!["Off", "Noise cancelling"]);
+        assert_eq!(encode_anc(2, 1), vec![2, 1]);
+
         // Verbatim from the app (FunctionConfigImpl.updateNoise): length 2,
         // type 4, the mode.
         assert_eq!(encode_anc_switch(0), [0x02, 0x04, 0x00]);
@@ -278,8 +280,62 @@ mod tests {
     }
 
     #[test]
+    fn noise_mode_parsing_and_names() {
+        assert_eq!(NoiseMode::parse("off"), Some(NoiseMode::Off));
+        assert_eq!(NoiseMode::parse("0"), Some(NoiseMode::Off));
+        assert_eq!(NoiseMode::parse("kapali"), Some(NoiseMode::Off));
+        assert_eq!(NoiseMode::parse("OFF"), Some(NoiseMode::Off));
+        assert_eq!(NoiseMode::parse("KAPALI"), Some(NoiseMode::Off));
+
+        assert_eq!(NoiseMode::parse("anc"), Some(NoiseMode::Cancelling));
+        assert_eq!(NoiseMode::parse("noise"), Some(NoiseMode::Cancelling));
+        assert_eq!(NoiseMode::parse("cancelling"), Some(NoiseMode::Cancelling));
+        assert_eq!(NoiseMode::parse("1"), Some(NoiseMode::Cancelling));
+        assert_eq!(NoiseMode::parse("ANC"), Some(NoiseMode::Cancelling));
+
+        assert_eq!(NoiseMode::parse("transparency"), Some(NoiseMode::Transparency));
+        assert_eq!(NoiseMode::parse("transparent"), Some(NoiseMode::Transparency));
+        assert_eq!(NoiseMode::parse("2"), Some(NoiseMode::Transparency));
+        assert_eq!(NoiseMode::parse("TRANSPARENT"), Some(NoiseMode::Transparency));
+
+        assert_eq!(NoiseMode::parse(""), None);
+        assert_eq!(NoiseMode::parse("3"), None);
+        assert_eq!(NoiseMode::parse("spatial"), None);
+
+        assert_eq!(NoiseMode::from_id(0), Some(NoiseMode::Off));
+        assert_eq!(NoiseMode::from_id(1), Some(NoiseMode::Cancelling));
+        assert_eq!(NoiseMode::from_id(2), Some(NoiseMode::Transparency));
+        assert_eq!(NoiseMode::from_id(3), None);
+        assert_eq!(NoiseMode::from_id(5), None);
+
+        assert_eq!(NoiseMode::Off.name(), "Off");
+        assert_eq!(NoiseMode::Cancelling.name(), "Noise cancelling");
+        assert_eq!(NoiseMode::Transparency.name(), "Transparency");
+    }
+
+    #[test]
+    fn noise_cycle_masks() {
+        // Buds 6 Lite reports 0x07 (all 3 modes supported)
+        assert_eq!(
+            noise_cycle_names(0x07),
+            vec!["Off", "Noise cancelling", "Transparency"]
+        );
+        // Buds 6 Play reports 0x00 (no ANC supported)
+        assert_eq!(noise_cycle_names(0x00), Vec::<&str>::new());
+
+        assert_eq!(noise_cycle_names(0x01), vec!["Off"]);
+        assert_eq!(noise_cycle_names(0x02), vec!["Noise cancelling"]);
+        assert_eq!(noise_cycle_names(0x04), vec!["Transparency"]);
+        assert_eq!(noise_cycle_names(0x03), vec!["Off", "Noise cancelling"]);
+        // High bits outside 0..2 are ignored
+        assert_eq!(noise_cycle_names(0xF8), Vec::<&str>::new());
+    }
+
+    #[test]
     fn names() {
+        assert_eq!(eq_name(0), Some("Balanced"));
         assert_eq!(eq_name(5), Some("Bass boost"));
+        assert_eq!(eq_name(10), Some("Personalized"));
         assert_eq!(eq_name(3), None);
         assert_eq!(action_name(42), "Action 42");
         assert_eq!(parse_action("next"), Some(3));

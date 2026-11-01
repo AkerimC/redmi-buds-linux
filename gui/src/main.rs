@@ -123,6 +123,7 @@ struct Ui {
     connect_btn: gtk::Button,
     cards: [BatteryCard; 3],
     eq: adw::ToggleGroup,
+    noise_group: adw::PreferencesGroup,
     noise: adw::ToggleGroup,
     gestures_group: adw::PreferencesGroup,
     gesture_rows: RefCell<Vec<Rc<GestureRow>>>,
@@ -283,6 +284,7 @@ impl Ui {
         self.title.set_subtitle("Connected");
         self.set_battery(&s.battery);
         self.set_eq(s.eq);
+        self.noise_group.set_visible(s.has_anc);
         self.set_noise(s.anc);
         self.set_gestures(&s.gestures);
         self.serial_row
@@ -369,6 +371,7 @@ fn build(app: &adw::Application, mac: String) {
     // Noise control
     let noise_group = group("Noise control");
     noise_group.set_description(Some("What the buds do with outside sound"));
+    noise_group.set_visible(false);
     let noise = adw::ToggleGroup::new();
     noise.add_css_class("round");
     noise.set_hexpand(true);
@@ -494,6 +497,7 @@ fn build(app: &adw::Application, mac: String) {
         connect_btn,
         cards,
         eq,
+        noise_group,
         noise,
         gestures_group,
         gesture_rows: RefCell::new(Vec::new()),

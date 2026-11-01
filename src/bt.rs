@@ -59,6 +59,8 @@ extern "C" {
         optval: *mut u8,
         optlen: *mut u32,
     ) -> c_int;
+    #[cfg(test)]
+    fn socketpair(domain: c_int, ty: c_int, protocol: c_int, sv: *mut c_int) -> c_int;
 }
 
 /// Parse a `AA:BB:CC:DD:EE:FF` address.
@@ -232,6 +234,17 @@ impl Rfcomm {
         }
         Ok(Some(n as usize))
     }
+
+    #[cfg(test)]
+    pub fn pair() -> io::Result<(Self, Self)> {
+        let mut fds = [0 as c_int; 2];
+        // AF_UNIX = 1, SOCK_STREAM = 1
+        let rc = unsafe { socketpair(1, SOCK_STREAM, 0, fds.as_mut_ptr()) };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((Rfcomm { fd: fds[0] }, Rfcomm { fd: fds[1] }))
+    }
 }
 
 impl Drop for Rfcomm {
@@ -267,5 +280,14 @@ mod tests {
         let mut wire = human;
         wire.reverse();
         assert_eq!(wire, [0x13, 0x71, 0xDA, 0x7D, 0x1A, 0x00]);
+    }
+
+    #[test]
+    fn rfcomm_pair_communication() {
+        let (mut a, mut b) = Rfcomm::pair().unwrap();
+        a.send(b"hello world").unwrap();
+        let mut buf = [0u8; 32];
+        let n = b.recv(&mut buf, 1000).unwrap().unwrap();
+        assert_eq!(&buf[..n], b"hello world");
     }
 }
