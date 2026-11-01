@@ -19,11 +19,18 @@ pub const CFG_ANC: u16 = 11;
 /// Config id of the modes the long-press cycles through, one byte per side.
 pub const CFG_NOISE_CYCLE: u16 = 10;
 
+/// Attribute type of the noise-control mode in `SET_TARGET_INFO` (0x08).
+///
+/// The app's `FunctionConfigImpl.updateNoise` sends this attribute, not a
+/// device-config write; see [`encode_anc_switch`].
+pub const ATTR_ANC_STATUS: u8 = 4;
+
 /// Noise-control mode, byte 0 of config id 11.
 ///
 /// Verified against the earphone app 1.38.0i on a Redmi Buds 6 Lite: tapping
-/// "Noise cancelling" in the app writes `01 00`, "Transparency" writes `02 00`
-/// and "Off" writes `00 00` to config id 11.
+/// "Noise cancelling" ends up as `01`, "Transparency" as `02` and "Off" as
+/// `00` — in the `SET_TARGET_INFO` attribute, which the firmware then mirrors
+/// into config id 11.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoiseMode {
     Off = 0,
@@ -75,6 +82,15 @@ pub fn encode_anc(mode: u8, level: u8) -> Vec<u8> {
     } else {
         vec![mode, level]
     }
+}
+
+/// Parameters of the `SET_TARGET_INFO` frame that switches the noise mode.
+///
+/// A vendor TLV of `len(u8) | type(u8) | value(len-1)`, i.e. `02 04 <mode>`.
+/// This is the only thing that moves the buds' audio path: writing config id
+/// 11 stores the same state (the app then shows it) without applying it.
+pub fn encode_anc_switch(mode: u8) -> [u8; 3] {
+    [0x02, ATTR_ANC_STATUS, mode]
 }
 
 /// Bit per selectable mode in config id 10 (the long-press cycle).
@@ -254,6 +270,11 @@ mod tests {
         assert_eq!(NoiseMode::from_id(5), None);
         assert_eq!(noise_cycle_names(0x07).len(), 3);
         assert_eq!(noise_cycle_names(0x03), vec!["Off", "Noise cancelling"]);
+        // Verbatim from the app (FunctionConfigImpl.updateNoise): length 2,
+        // type 4, the mode.
+        assert_eq!(encode_anc_switch(0), [0x02, 0x04, 0x00]);
+        assert_eq!(encode_anc_switch(1), [0x02, 0x04, 0x01]);
+        assert_eq!(encode_anc_switch(2), [0x02, 0x04, 0x02]);
     }
 
     #[test]

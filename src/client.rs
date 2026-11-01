@@ -435,9 +435,18 @@ impl Buds {
 
     /// Switch the noise-control mode. `level` is kept as it is when `None`.
     pub fn set_anc(&mut self, mode: u8, level: Option<u8>) -> io::Result<()> {
-        let current = self.get_anc()?.map(|(_, l)| l).unwrap_or(0);
-        let value = settings::encode_anc(mode, level.unwrap_or(current));
-        self.set_config(&[(CFG_ANC, value)])
+        // The audio path only moves on SET_TARGET_INFO attribute 4, which is
+        // what the earphone app sends. A config id 11 write is stored (and the
+        // app then reports the new mode) but never reaches the DSP, so it
+        // looks like it worked while nothing is audible.
+        let params = settings::encode_anc_switch(mode);
+        self.request(0x08, &params, APP_EARPHONE)?;
+        // The level has no attribute of its own: the app keeps it in config
+        // id 11, and the firmware mirrors the mode it just got there.
+        if let Some(level) = level {
+            self.set_config(&[(CFG_ANC, settings::encode_anc(mode, level))])?;
+        }
+        Ok(())
     }
 
     /// Modes the long-press cycles through, per side (config id 10 bitmask).

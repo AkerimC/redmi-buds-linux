@@ -310,7 +310,18 @@ Observed values and their encodings:
 
 ### Noise control (verified on the Buds 6 Lite, 2026-11-01)
 
-Config id 11 holds `[mode, level]`:
+The mode is **not** a device-config write. `SET_TARGET_INFO` (0x08) attribute 4
+carries it as a vendor TLV `len(u8) | type(u8) | value`:
+
+```
+02 04 00    off
+02 04 01    noise cancelling
+02 04 02    transparency
+```
+
+The firmware answers `status = 0` and mirrors the new mode into config id 11 by
+itself. Config id 11 therefore holds `[mode, level]` and is only the stored
+state:
 
 | value | mode (earphone app 1.38.0i) |
 |---|---|
@@ -319,22 +330,31 @@ Config id 11 holds `[mode, level]`:
 | 2 | Transparency |
 | 3 | stored by the firmware, no such mode in the app |
 
-The level byte is a second axis: the firmware stores 0–2 for modes 1 and 2, and
-forces it back to 0 while the mode is 0. The app's level names in 1.38.0i
-(`ANC_LEVEL_NOISE_ADAPTIVE/ANTI_WIND/BALANCE/COMFORTABLE/DEEP/DEEP_PLUS`,
-`ANC_LEVEL_TRANSPARENT_*`) show the level is model- and firmware-specific, so a
-client should treat it as an opaque 0–2 knob rather than guess which is which.
+**Writing config id 11 alone does nothing audible.** The value is stored, the
+earphone app then reports the new mode, and the read-back agrees — but the DSP
+never switches. This is a good trap: every observable signal says the write
+worked. Only the attribute above moves the audio path, which is why the desktop
+client has to send it (`settings::encode_anc_switch`).
 
-How this was pinned down: change the mode in the earphone app, then read id 11
-from the host that takes the control channel next. Tapping "noise cancelling"
-writes `01 00`, "transparency" `02 00`, "off" `00 00`; writes from the host are
-stored and applied immediately, and the app shows whatever the host wrote.
+The level byte is a second axis: the firmware stores 0–2 for modes 1 and 2 and
+resets it to 0 on a mode change. It has no attribute; the app writes it through
+config id 11 (`DeviceConfigNoiseLevel`, `paramsToValue` = `[state, level]`), so
+that write is correct *for the level* as long as the mode is already set. The
+app's level names in 1.38.0i (`ANC_LEVEL_NOISE_ADAPTIVE/ANTI_WIND/BALANCE/
+COMFORTABLE/DEEP/DEEP_PLUS`, `ANC_LEVEL_TRANSPARENT_*`) show the level is model-
+and firmware-specific, so treat it as an opaque 0–2 knob.
 
-Two traps:
+How this was pinned down: the earphone app's own code (1.38.0i,
+`FunctionConfigImpl.updateNoise` → `SetDeviceConfigHelper.sendSetRunInfo`,
+`VendorData{type=4, length=2, datas=[mode]}`), then verified on the wire — the
+response is `status=ok` and config id 11 changes to the new mode without any
+other frame.
 
-- The mode is not reported anywhere else. `GET_DEVICE_RUN_INFO` attribute `0x0b`
-  stays `00` in all three modes on the 6 Lite, and no `NOTIFY_DEVICE_CONFIG`
-  frame is sent on a change, so poll config id 11 instead of listening.
+Traps, all confirmed on the 6 Lite:
+
+- Not reported anywhere else: `GET_DEVICE_RUN_INFO` attribute `0x0b` stays `00`
+  in every mode, `GET_TARGET_INFO` attribute 4 also stays `00`, and no
+  `NOTIFY_DEVICE_CONFIG` is sent. Poll config id 11 to read the mode.
 - The app refuses to switch modes while the buds sit in the case (the taps do
   nothing), so test or script the change with the buds outside it.
 
