@@ -19,6 +19,7 @@ pub enum Req {
     Connect,
     Refresh,
     SetEq(u8),
+    SetAnc(u8),
     SetGesture(Gesture, Option<u8>, Option<u8>),
     Find { ring: bool, device: u8 },
 }
@@ -28,6 +29,9 @@ pub struct Snapshot {
     pub name: String,
     pub battery: Vec<(i16, bool)>,
     pub eq: Option<u8>,
+    /// Noise-control mode and level (config id 11).
+    pub anc: Option<(u8, u8)>,
+    pub has_anc: bool,
     pub gestures: Vec<GestureBinding>,
     pub serial: Option<String>,
     pub mac: String,
@@ -39,6 +43,7 @@ pub enum Ev {
     Battery(Vec<(i16, bool)>),
     Gestures(Vec<GestureBinding>),
     Eq(Option<u8>),
+    Anc(Option<(u8, u8)>),
     /// Something the user did failed; the session is still fine.
     Failed(String),
     Disconnected(String),
@@ -51,10 +56,14 @@ fn snapshot(buds: &mut Buds, mac: &str) -> std::io::Result<Snapshot> {
     } else {
         info.multi_battery
     };
+    let noise_cycle = buds.get_noise_cycle().unwrap_or(None);
+    let has_anc = noise_cycle.map(|(l, r)| l != 0 || r != 0).unwrap_or(false);
     Ok(Snapshot {
         name: info.name.unwrap_or_else(|| "Buds".into()),
         battery,
         eq: buds.get_eq()?,
+        anc: buds.get_anc()?,
+        has_anc,
         gestures: buds.get_gestures()?,
         serial: buds.serial()?,
         mac: mac.to_string(),
@@ -130,6 +139,10 @@ pub fn run(mac: String, reqs: Receiver<Req>, events: async_channel::Sender<Ev>) 
                 .set_eq(p)
                 .and_then(|_| buds.get_eq())
                 .map(|e| Some(Ev::Eq(e))),
+            Req::SetAnc(mode) => buds
+                .set_anc(mode, None)
+                .and_then(|_| buds.get_anc())
+                .map(|a| Some(Ev::Anc(a))),
             Req::SetGesture(g, l, r) => buds
                 .set_gesture(g, l, r)
                 .and_then(|_| buds.get_gestures())

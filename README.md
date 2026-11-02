@@ -13,7 +13,8 @@ probably work too, but their feature sets differ. Reports are welcome.
 ## Features
 
 - Battery for each bud and the case, with charging state
-- EQ presets (Balanced, Vocal, Bass, Treble, Volume boost)
+- Noise control: off, noise cancelling and transparency (on models with ANC)
+- EQ presets (Balanced, Vocal, Bass, Treble, Volume, Personalized)
 - Remap single, double and triple tap and press-and-hold, per bud
 - Find my buds: ring left, right or both
 - Raw access to every device-config id, for exploring
@@ -51,7 +52,11 @@ device.
 redmi-buds battery                     # L=100%⚡  R=100%⚡  case=40%
 redmi-buds info
 redmi-buds eq get
-redmi-buds eq set 5                    # 0 balanced, 1 vocal, 5 bass, 6 treble, 7 volume
+redmi-buds eq set 5                    # 0 balanced, 1 vocal, 5 bass, 6 treble,
+                                       # 7 volume, 10 personalized
+redmi-buds anc get                     # anc mode 1 (Noise cancelling)  level 0
+redmi-buds anc set transparency        # off | noise | transparency
+redmi-buds anc set noise 2             # optional level 0-2, model specific
 redmi-buds gesture get
 redmi-buds gesture set double left next
 redmi-buds find                        # ring; `find --stop` to stop

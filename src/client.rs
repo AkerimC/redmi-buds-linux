@@ -8,7 +8,10 @@ use std::process::Command;
 use crate::auth;
 use crate::bt::{parse_mac, Rfcomm};
 use crate::rcsp::{self, Frame, APP_EARPHONE, APP_MIUI};
-use crate::settings::{self, Gesture, GestureBinding, CFG_EQ, CFG_FIND, CFG_GESTURES, CFG_SERIAL};
+use crate::settings::{
+    self, Gesture, GestureBinding, CFG_ANC, CFG_EQ, CFG_FIND, CFG_GESTURES, CFG_NOISE_CYCLE,
+    CFG_SERIAL,
+};
 
 /// First paired device whose name looks like Xiaomi/Redmi buds, via `bluetoothctl`.
 pub fn find_paired_buds() -> Option<String> {
@@ -401,10 +404,12 @@ impl Buds {
     }
 
     pub fn set_eq(&mut self, preset: u8) -> io::Result<()> {
-        if preset > 7 {
+        // The firmware stores 0..13, unnamed slots included, and the per-model
+        // preset lists differ (the 6 Lite adds 10, "Personalized").
+        if preset > 13 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "EQ preset must be 0..7",
+                "EQ preset must be 0..13",
             ));
         }
         self.set_config(&[(CFG_EQ, vec![preset])])
@@ -423,8 +428,36 @@ impl Buds {
         self.set_config(&[(CFG_GESTURES, value)])
     }
 
-    pub fn serial(&mut self) -> io::Result<Option<String>> {
+    /// Noise-control mode and level (config id 11), as stored by the buds.
+    pub fn get_anc(&mut self) -> io::Result<Option<(u8, u8)>> {
+        Ok(self.get_one(CFG_ANC)?.as_deref().and_then(settings::decode_anc))
+    }
+
+    /// Switch the noise-control mode. `level` is kept as it is when `None`.
+    pub fn set_anc(&mut self, mode: u8, level: Option<u8>) -> io::Result<()> {
+        // The audio path only moves on SET_TARGET_INFO attribute 4, which is
+        // what the earphone app sends. A config id 11 write is stored (and the
+        // app then reports the new mode) but never reaches the DSP, so it
+        // looks like it worked while nothing is audible.
+        let params = settings::encode_anc_switch(mode);
+        self.request(0x08, &params, APP_EARPHONE)?;
+        // The level has no attribute of its own: the app keeps it in config
+        // id 11, and the firmware mirrors the mode it just got there.
+        if let Some(level) = level {
+            self.set_config(&[(CFG_ANC, settings::encode_anc(mode, level))])?;
+        }
+        Ok(())
+    }
+
+    /// Modes the long-press cycles through, per side (config id 10 bitmask).
+    pub fn get_noise_cycle(&mut self) -> io::Result<Option<(u8, u8)>> {
         Ok(self
+            .get_one(CFG_NOISE_CYCLE)?
+            .filter(|v| v.len() >= 2)
+            .map(|v| (v[0], v[1])))
+    }
+
+    pub fn serial(&mut self) -> io::Result<Option<String>> {        Ok(self
             .get_one(CFG_SERIAL)?
             .map(|v| String::from_utf8_lossy(&v).into_owned()))
     }
@@ -435,4 +468,276 @@ impl Buds {
     }
 
     pub fn close(self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockDevice {
+        conn: Rfcomm,
+        buf: Vec<u8>,
+    }
+
+    impl MockDevice {
+        fn new(conn: Rfcomm) -> Self {
+            Self {
+                conn,
+                buf: Vec::with_capacity(1024),
+            }
+        }
+
+        fn recv_cmd(&mut self) -> Frame {
+            let mut scratch = [0u8; 1024];
+            loop {
+                if let Some(f) = rcsp::extract(&mut self.buf) {
+                    return f;
+                }
+                let n = self.conn.recv(&mut scratch, 1000).unwrap().expect("eof");
+                self.buf.extend_from_slice(&scratch[..n]);
+            }
+        }
+
+        fn send_rsp(&mut self, cmd: &Frame, status: u8, data: &[u8]) {
+            let mut payload = Vec::with_capacity(data.len() + 2);
+            payload.push(status);
+            payload.push(cmd.sn());
+            payload.extend_from_slice(data);
+            let raw = rcsp::encode(cmd.target_app(), cmd.opcode, &payload);
+            self.conn.send(&raw).unwrap();
+        }
+    }
+
+    impl Buds {
+        fn new_mock(conn: Rfcomm) -> Self {
+            Buds {
+                conn,
+                buf: Vec::with_capacity(1024),
+                pending: VecDeque::new(),
+                sn: 0,
+                verbose: false,
+                mac: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
+                channel: 29,
+            }
+        }
+    }
+
+    #[test]
+    fn channel_candidates_includes_buds_6_lite() {
+        assert_eq!(CHANNEL_CANDIDATES[0], 6);
+        assert_eq!(CHANNEL_CANDIDATES[1], 29);
+        assert!(CHANNEL_CANDIDATES.contains(&6));
+        assert!(CHANNEL_CANDIDATES.contains(&29));
+    }
+
+    #[test]
+    fn get_anc_buds_6_lite() {
+        let (c_rf, s_rf) = Rfcomm::pair().unwrap();
+        let mut buds = Buds::new_mock(c_rf);
+        let handle = std::thread::spawn(move || {
+            let mut dev = MockDevice::new(s_rf);
+            let cmd = dev.recv_cmd();
+            assert_eq!(cmd.opcode, 0xF3);
+            assert_eq!(cmd.target_app(), APP_EARPHONE);
+            assert_eq!(cmd.data(), &[0x00, 0x0B]); // CFG_ANC = 11
+            let tlv = rcsp::tlv_u16(CFG_ANC, &[0x01, 0x02]); // Cancelling, level 2
+            dev.send_rsp(&cmd, 0, &tlv);
+        });
+
+        let anc = buds.get_anc().unwrap();
+        assert_eq!(anc, Some((1, 2)));
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn get_anc_buds_6_play() {
+        let (c_rf, s_rf) = Rfcomm::pair().unwrap();
+        let mut buds = Buds::new_mock(c_rf);
+        let handle = std::thread::spawn(move || {
+            let mut dev = MockDevice::new(s_rf);
+            let cmd = dev.recv_cmd();
+            assert_eq!(cmd.opcode, 0xF3);
+            let tlv = rcsp::tlv_u16(CFG_ANC, &[0x00, 0x00]);
+            dev.send_rsp(&cmd, 0, &tlv);
+        });
+
+        let anc = buds.get_anc().unwrap();
+        assert_eq!(anc, Some((0, 0)));
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn get_anc_absent() {
+        let (c_rf, s_rf) = Rfcomm::pair().unwrap();
+        let mut buds = Buds::new_mock(c_rf);
+        let handle = std::thread::spawn(move || {
+            let mut dev = MockDevice::new(s_rf);
+            let cmd = dev.recv_cmd();
+            dev.send_rsp(&cmd, 0, &[]);
+        });
+
+        let anc = buds.get_anc().unwrap();
+        assert_eq!(anc, None);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn set_anc_mode_only() {
+        let (c_rf, s_rf) = Rfcomm::pair().unwrap();
+        let mut buds = Buds::new_mock(c_rf);
+        let handle = std::thread::spawn(move || {
+            let mut dev = MockDevice::new(s_rf);
+            let cmd = dev.recv_cmd();
+            assert_eq!(cmd.opcode, 0x08); // SET_TARGET_INFO
+            assert_eq!(cmd.target_app(), APP_EARPHONE);
+            assert_eq!(cmd.data(), &[0x02, 0x04, 0x01]); // mode 1
+            dev.send_rsp(&cmd, 0, &[]);
+        });
+
+        buds.set_anc(1, None).unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn set_anc_mode_and_level() {
+        let (c_rf, s_rf) = Rfcomm::pair().unwrap();
+        let mut buds = Buds::new_mock(c_rf);
+        let handle = std::thread::spawn(move || {
+            let mut dev = MockDevice::new(s_rf);
+            let cmd1 = dev.recv_cmd();
+            assert_eq!(cmd1.opcode, 0x08);
+            assert_eq!(cmd1.data(), &[0x02, 0x04, 0x02]); // Transparency = 2
+            dev.send_rsp(&cmd1, 0, &[]);
+
+            let cmd2 = dev.recv_cmd();
+            assert_eq!(cmd2.opcode, 0xF2); // SET_DEVICE_CONFIG
+            assert_eq!(cmd2.target_app(), APP_EARPHONE);
+            let tlvs = rcsp::parse_tlvs_u16(cmd2.data());
+            assert_eq!(tlvs.len(), 1);
+            assert_eq!(tlvs[0], (CFG_ANC, vec![2, 1]));
+            dev.send_rsp(&cmd2, 0, &[]);
+        });
+
+        buds.set_anc(2, Some(1)).unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn set_anc_off_forces_level_zero() {
+        let (c_rf, s_rf) = Rfcomm::pair().unwrap();
+        let mut buds = Buds::new_mock(c_rf);
+        let handle = std::thread::spawn(move || {
+            let mut dev = MockDevice::new(s_rf);
+            let cmd1 = dev.recv_cmd();
+            assert_eq!(cmd1.opcode, 0x08);
+            assert_eq!(cmd1.data(), &[0x02, 0x04, 0x00]); // Off = 0
+            dev.send_rsp(&cmd1, 0, &[]);
+
+            let cmd2 = dev.recv_cmd();
+            assert_eq!(cmd2.opcode, 0xF2);
+            let tlvs = rcsp::parse_tlvs_u16(cmd2.data());
+            assert_eq!(tlvs[0], (CFG_ANC, vec![0, 0]));
+            dev.send_rsp(&cmd2, 0, &[]);
+        });
+
+        buds.set_anc(0, Some(2)).unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn get_noise_cycle_buds_6_lite_and_6_play() {
+        // Buds 6 Lite: reports 0x07 0x07
+        let (c_rf, s_rf) = Rfcomm::pair().unwrap();
+        let mut buds = Buds::new_mock(c_rf);
+        let handle = std::thread::spawn(move || {
+            let mut dev = MockDevice::new(s_rf);
+            let cmd = dev.recv_cmd();
+            assert_eq!(cmd.opcode, 0xF3);
+            assert_eq!(cmd.data(), &[0x00, 0x0A]);
+            let tlv = rcsp::tlv_u16(CFG_NOISE_CYCLE, &[0x07, 0x07]);
+            dev.send_rsp(&cmd, 0, &tlv);
+        });
+        let cycle = buds.get_noise_cycle().unwrap();
+        assert_eq!(cycle, Some((0x07, 0x07)));
+        handle.join().unwrap();
+
+        // Buds 6 Play: reports 0x00 0x00
+        let (c_rf, s_rf) = Rfcomm::pair().unwrap();
+        let mut buds = Buds::new_mock(c_rf);
+        let handle = std::thread::spawn(move || {
+            let mut dev = MockDevice::new(s_rf);
+            let cmd = dev.recv_cmd();
+            let tlv = rcsp::tlv_u16(CFG_NOISE_CYCLE, &[0x00, 0x00]);
+            dev.send_rsp(&cmd, 0, &tlv);
+        });
+        let cycle = buds.get_noise_cycle().unwrap();
+        assert_eq!(cycle, Some((0x00, 0x00)));
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn set_anc_device_error_reporting() {
+        let (c_rf, s_rf) = Rfcomm::pair().unwrap();
+        let mut buds = Buds::new_mock(c_rf);
+        let handle = std::thread::spawn(move || {
+            let mut dev = MockDevice::new(s_rf);
+            let cmd = dev.recv_cmd();
+            dev.send_rsp(&cmd, 9, &[]); // 9 = not_supported
+        });
+
+        let err = buds.set_anc(1, None).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("SET_TARGET_INFO") && msg.contains("not_supported"),
+            "unexpected error message: {msg}"
+        );
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn authentication_handshake() {
+        let (c_rf, s_rf) = Rfcomm::pair().unwrap();
+        let mut buds = Buds::new_mock(c_rf);
+        let handle = std::thread::spawn(move || {
+            let mut dev = MockDevice::new(s_rf);
+            let cmd1 = dev.recv_cmd();
+            assert_eq!(cmd1.opcode, 0x50);
+            assert_eq!(cmd1.target_app(), APP_MIUI);
+            let params = cmd1.data();
+            assert_eq!(params[0], 0x01);
+            let challenge: [u8; 16] = params[1..17].try_into().unwrap();
+            let expected = auth::transform(&auth::ADDR6_PLACEHOLDER, &challenge);
+            let mut rsp_data = vec![0x01];
+            rsp_data.extend_from_slice(&expected);
+            dev.send_rsp(&cmd1, 0, &rsp_data);
+
+            let cmd2 = dev.recv_cmd();
+            assert_eq!(cmd2.opcode, 0x51);
+            assert_eq!(cmd2.target_app(), APP_MIUI);
+            dev.send_rsp(&cmd2, 0, &[]);
+        });
+
+        buds.authenticate().unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn set_eq_allows_preset_10_and_rejects_above_13() {
+        let (c_rf, s_rf) = Rfcomm::pair().unwrap();
+        let mut buds = Buds::new_mock(c_rf);
+        let handle = std::thread::spawn(move || {
+            let mut dev = MockDevice::new(s_rf);
+            let cmd = dev.recv_cmd();
+            assert_eq!(cmd.opcode, 0xF2);
+            let tlvs = rcsp::parse_tlvs_u16(cmd.data());
+            assert_eq!(tlvs[0], (CFG_EQ, vec![10]));
+            dev.send_rsp(&cmd, 0, &[]);
+        });
+
+        buds.set_eq(10).unwrap();
+        handle.join().unwrap();
+
+        let err = buds.set_eq(14).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
 }

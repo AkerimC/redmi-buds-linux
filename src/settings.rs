@@ -14,15 +14,103 @@ pub const CFG_GESTURES: u16 = 2;
 pub const CFG_FIND: u16 = 9;
 /// Config id of the serial number.
 pub const CFG_SERIAL: u16 = 39;
+/// Config id of the noise-control mode and level (`DeviceConfigAncState`).
+pub const CFG_ANC: u16 = 11;
+/// Config id of the modes the long-press cycles through, one byte per side.
+pub const CFG_NOISE_CYCLE: u16 = 10;
+
+/// Attribute type of the noise-control mode in `SET_TARGET_INFO` (0x08).
+///
+/// The app's `FunctionConfigImpl.updateNoise` sends this attribute, not a
+/// device-config write; see [`encode_anc_switch`].
+pub const ATTR_ANC_STATUS: u8 = 4;
+
+/// Noise-control mode, byte 0 of config id 11.
+///
+/// Verified against the earphone app 1.38.0i on a Redmi Buds 6 Lite: tapping
+/// "Noise cancelling" ends up as `01`, "Transparency" as `02` and "Off" as
+/// `00` — in the `SET_TARGET_INFO` attribute, which the firmware then mirrors
+/// into config id 11.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoiseMode {
+    Off = 0,
+    Cancelling = 1,
+    Transparency = 2,
+}
+
+impl NoiseMode {
+    pub const ALL: [NoiseMode; 3] = [
+        NoiseMode::Off,
+        NoiseMode::Cancelling,
+        NoiseMode::Transparency,
+    ];
+
+    pub fn from_id(id: u8) -> Option<NoiseMode> {
+        NoiseMode::ALL.into_iter().find(|m| *m as u8 == id)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            NoiseMode::Off => "Off",
+            NoiseMode::Cancelling => "Noise cancelling",
+            NoiseMode::Transparency => "Transparency",
+        }
+    }
+
+    /// Short form for CLI arguments and toggle labels.
+    pub fn parse(s: &str) -> Option<NoiseMode> {
+        match s.to_ascii_lowercase().as_str() {
+            "off" | "0" | "kapali" => Some(NoiseMode::Off),
+            "anc" | "noise" | "cancelling" | "1" => Some(NoiseMode::Cancelling),
+            "transparency" | "transparent" | "2" => Some(NoiseMode::Transparency),
+            _ => None,
+        }
+    }
+}
+
+/// Decode config id 11: `[mode, level]`. Returns the raw mode, so unknown
+/// values (the firmware stores 3 as well) survive a read.
+pub fn decode_anc(value: &[u8]) -> Option<(u8, u8)> {
+    Some((*value.first()?, value.get(1).copied().unwrap_or(0)))
+}
+
+/// Encode a mode write. The firmware forces the level to 0 while the mode is
+/// off, so don't send a stale level with it.
+pub fn encode_anc(mode: u8, level: u8) -> Vec<u8> {
+    if mode == 0 {
+        vec![0, 0]
+    } else {
+        vec![mode, level]
+    }
+}
+
+/// Parameters of the `SET_TARGET_INFO` frame that switches the noise mode.
+///
+/// A vendor TLV of `len(u8) | type(u8) | value(len-1)`, i.e. `02 04 <mode>`.
+/// This is the only thing that moves the buds' audio path: writing config id
+/// 11 stores the same state (the app then shows it) without applying it.
+pub fn encode_anc_switch(mode: u8) -> [u8; 3] {
+    [0x02, ATTR_ANC_STATUS, mode]
+}
+
+/// Bit per selectable mode in config id 10 (the long-press cycle).
+pub fn noise_cycle_names(mask: u8) -> Vec<&'static str> {
+    NoiseMode::ALL
+        .into_iter()
+        .filter(|m| mask & (1 << (*m as u8)) != 0)
+        .map(NoiseMode::name)
+        .collect()
+}
 
 /// The presets the app offers for this model, in app order. The ids are the
 /// values the capture shows the app writing to config id 7.
-pub const EQ_PRESETS: [(u8, &str); 5] = [
+pub const EQ_PRESETS: [(u8, &str); 6] = [
     (0, "Balanced"),
     (1, "Vocal"),
     (5, "Bass boost"),
     (6, "Treble boost"),
     (7, "Volume boost"),
+    (10, "Personalized"),
 ];
 
 pub fn eq_name(id: u8) -> Option<&'static str> {
@@ -170,8 +258,84 @@ mod tests {
     }
 
     #[test]
+    fn anc_encoding() {
+        assert_eq!(decode_anc(&[1, 0]), Some((1, 0)));
+        assert_eq!(decode_anc(&[2]), Some((2, 0)));
+        assert_eq!(decode_anc(&[0, 0]), Some((0, 0)));
+        assert_eq!(decode_anc(&[3, 1]), Some((3, 1))); // Unknown modes preserved
+        assert_eq!(decode_anc(&[]), None);
+
+        // Level is meaningless while the mode is off.
+        assert_eq!(encode_anc(0, 0), vec![0, 0]);
+        assert_eq!(encode_anc(0, 2), vec![0, 0]);
+        assert_eq!(encode_anc(1, 0), vec![1, 0]);
+        assert_eq!(encode_anc(1, 2), vec![1, 2]);
+        assert_eq!(encode_anc(2, 1), vec![2, 1]);
+
+        // Verbatim from the app (FunctionConfigImpl.updateNoise): length 2,
+        // type 4, the mode.
+        assert_eq!(encode_anc_switch(0), [0x02, 0x04, 0x00]);
+        assert_eq!(encode_anc_switch(1), [0x02, 0x04, 0x01]);
+        assert_eq!(encode_anc_switch(2), [0x02, 0x04, 0x02]);
+    }
+
+    #[test]
+    fn noise_mode_parsing_and_names() {
+        assert_eq!(NoiseMode::parse("off"), Some(NoiseMode::Off));
+        assert_eq!(NoiseMode::parse("0"), Some(NoiseMode::Off));
+        assert_eq!(NoiseMode::parse("kapali"), Some(NoiseMode::Off));
+        assert_eq!(NoiseMode::parse("OFF"), Some(NoiseMode::Off));
+        assert_eq!(NoiseMode::parse("KAPALI"), Some(NoiseMode::Off));
+
+        assert_eq!(NoiseMode::parse("anc"), Some(NoiseMode::Cancelling));
+        assert_eq!(NoiseMode::parse("noise"), Some(NoiseMode::Cancelling));
+        assert_eq!(NoiseMode::parse("cancelling"), Some(NoiseMode::Cancelling));
+        assert_eq!(NoiseMode::parse("1"), Some(NoiseMode::Cancelling));
+        assert_eq!(NoiseMode::parse("ANC"), Some(NoiseMode::Cancelling));
+
+        assert_eq!(NoiseMode::parse("transparency"), Some(NoiseMode::Transparency));
+        assert_eq!(NoiseMode::parse("transparent"), Some(NoiseMode::Transparency));
+        assert_eq!(NoiseMode::parse("2"), Some(NoiseMode::Transparency));
+        assert_eq!(NoiseMode::parse("TRANSPARENT"), Some(NoiseMode::Transparency));
+
+        assert_eq!(NoiseMode::parse(""), None);
+        assert_eq!(NoiseMode::parse("3"), None);
+        assert_eq!(NoiseMode::parse("spatial"), None);
+
+        assert_eq!(NoiseMode::from_id(0), Some(NoiseMode::Off));
+        assert_eq!(NoiseMode::from_id(1), Some(NoiseMode::Cancelling));
+        assert_eq!(NoiseMode::from_id(2), Some(NoiseMode::Transparency));
+        assert_eq!(NoiseMode::from_id(3), None);
+        assert_eq!(NoiseMode::from_id(5), None);
+
+        assert_eq!(NoiseMode::Off.name(), "Off");
+        assert_eq!(NoiseMode::Cancelling.name(), "Noise cancelling");
+        assert_eq!(NoiseMode::Transparency.name(), "Transparency");
+    }
+
+    #[test]
+    fn noise_cycle_masks() {
+        // Buds 6 Lite reports 0x07 (all 3 modes supported)
+        assert_eq!(
+            noise_cycle_names(0x07),
+            vec!["Off", "Noise cancelling", "Transparency"]
+        );
+        // Buds 6 Play reports 0x00 (no ANC supported)
+        assert_eq!(noise_cycle_names(0x00), Vec::<&str>::new());
+
+        assert_eq!(noise_cycle_names(0x01), vec!["Off"]);
+        assert_eq!(noise_cycle_names(0x02), vec!["Noise cancelling"]);
+        assert_eq!(noise_cycle_names(0x04), vec!["Transparency"]);
+        assert_eq!(noise_cycle_names(0x03), vec!["Off", "Noise cancelling"]);
+        // High bits outside 0..2 are ignored
+        assert_eq!(noise_cycle_names(0xF8), Vec::<&str>::new());
+    }
+
+    #[test]
     fn names() {
+        assert_eq!(eq_name(0), Some("Balanced"));
         assert_eq!(eq_name(5), Some("Bass boost"));
+        assert_eq!(eq_name(10), Some("Personalized"));
         assert_eq!(eq_name(3), None);
         assert_eq!(action_name(42), "Action 42");
         assert_eq!(parse_action("next"), Some(3));

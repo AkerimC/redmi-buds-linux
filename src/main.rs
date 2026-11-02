@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use redmi_buds::auth;
 use redmi_buds::client::{find_paired_buds, Buds};
 use redmi_buds::rcsp;
-use redmi_buds::settings::{self, Gesture};
+use redmi_buds::settings::{self, Gesture, NoiseMode};
 
 const USAGE: &str = "\
 redmi-buds - control Redmi/Xiaomi buds over Bluetooth RFCOMM
@@ -26,8 +26,11 @@ COMMANDS:
     info              device name, IDs and battery
     battery           battery levels
     eq get            read the EQ preset (config id 7)
-    eq set <0-7>      set the EQ preset (0 balanced, 1 vocal, 5 bass,
-                      6 treble, 7 volume boost)
+    eq set <0-13>     set the EQ preset (0 balanced, 1 vocal, 5 bass,
+                      6 treble, 7 volume, 10 personalized)
+    anc get           noise control mode and level (config id 11)
+    anc set <MODE> [LEVEL]
+                      MODE: off, noise, transparency; LEVEL 0-2 (default: keep)
     gesture get       show what each tap/hold does
     gesture set <single|double|triple|long> <left|right|both> <ACTION>
                       ACTION: none play prev next vol+ vol- assistant, or an id
@@ -37,10 +40,13 @@ COMMANDS:
     selftest          verify the auth transform against hardware vectors
 ";
 
+#[derive(Debug, PartialEq, Eq)]
 enum Cmd {
     Info,
     Battery,
     EqGet,
+    AncGet,
+    AncSet(u8, Option<u8>),
     EqSet(u8),
     Get(Vec<u16>),
     Set(u16, Vec<u8>),
@@ -51,6 +57,7 @@ enum Cmd {
     Help,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 struct Opts {
     mac: Option<String>,
     channel: Option<u8>,
@@ -69,7 +76,15 @@ fn parse_u16(s: &str) -> Result<u16, String> {
 }
 
 fn parse_args() -> Result<Opts, String> {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from<I, T>(args: I) -> Result<Opts, String>
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let mut args: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
     if args.is_empty() {
         return Err("no command given".into());
     }
@@ -122,13 +137,40 @@ fn parse_args() -> Result<Opts, String> {
         "eq" => match args.get(1).map(String::as_str) {
             Some("get") => Cmd::EqGet,
             Some("set") => {
-                let v = args.get(2).ok_or("eq set needs a preset 0..7")?;
-                Cmd::EqSet(v.parse::<u8>().map_err(|_| "preset must be 0..7")?)
+                let v = args.get(2).ok_or("eq set needs a preset 0..13")?;
+                let n = v.parse::<u8>().map_err(|_| "preset must be 0..13")?;
+                if n > 13 {
+                    return Err("preset must be 0..13".into());
+                }
+                Cmd::EqSet(n)
             }
-            _ => return Err("usage: eq get | eq set <0-7>".into()),
+            _ => return Err("usage: eq get | eq set <0-13>".into()),
         },
-        "gesture" => match args.get(1).map(String::as_str) {
-            Some("get") => Cmd::GestureGet,
+        "anc" => {
+            let usage = "usage: anc get | anc set <off|noise|transparency> [level 0-2]";
+            match args.get(1).map(String::as_str) {
+                Some("get") => Cmd::AncGet,
+                Some("set") => {
+                    let mode = args
+                        .get(2)
+                        .and_then(|s| NoiseMode::parse(s))
+                        .ok_or(usage)?;
+                    let level = match args.get(3) {
+                        Some(v) => {
+                            let n = v.parse::<u8>().map_err(|_| "level must be 0-2")?;
+                            if n > 2 {
+                                return Err("level must be 0-2".into());
+                            }
+                            Some(n)
+                        }
+                        None => None,
+                    };
+                    Cmd::AncSet(mode as u8, level)
+                }
+                _ => return Err(usage.into()),
+            }
+        }
+        "gesture" => match args.get(1).map(String::as_str) {            Some("get") => Cmd::GestureGet,
             Some("set") => {
                 let usage = "usage: gesture set <single|double|triple|long> <left|right|both> <ACTION>";
                 let g = args.get(2).and_then(|s| Gesture::parse(s)).ok_or(usage)?;
@@ -293,6 +335,39 @@ fn run(opts: &Opts) -> Result<(), String> {
             let levels = buds.battery().map_err(|e| e.to_string())?;
             println!("{}", fmt_battery(&levels));
         }
+        Cmd::AncGet => {
+            let anc = buds.get_anc().map_err(|e| e.to_string())?;
+            match anc {
+                Some((mode, level)) => {
+                    let name = NoiseMode::from_id(mode).map_or("<unknown>", NoiseMode::name);
+                    let cycle = buds
+                        .get_noise_cycle()
+                        .ok()
+                        .flatten()
+                        .map(|(l, r)| {
+                            let names = settings::noise_cycle_names(l.min(r));
+                            names.join(" / ")
+                        })
+                        .unwrap_or_default();
+                    println!("anc mode {mode} ({name})  level {level}");
+                    if !cycle.is_empty() {
+                        println!("long-press cycles: {cycle}");
+                    }
+                }
+                None => println!("anc (absent)"),
+            }
+        }
+        Cmd::AncSet(mode, level) => {
+            buds.set_anc(*mode, *level).map_err(|e| e.to_string())?;
+            let anc = buds.get_anc().map_err(|e| e.to_string())?;
+            match anc {
+                Some((m, l)) => println!(
+                    "anc set to {m} ({}) level {l}",
+                    NoiseMode::from_id(m).map_or("<unknown>", NoiseMode::name)
+                ),
+                None => println!("anc write sent"),
+            }
+        }
         Cmd::EqGet => {
             let preset = buds.get_eq().map_err(|e| e.to_string())?;
             match preset {
@@ -362,5 +437,70 @@ fn main() -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_anc_commands() {
+        let opts = parse_args_from(["anc", "get"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::AncGet);
+
+        let opts = parse_args_from(["anc", "set", "off"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::AncSet(0, None));
+
+        let opts = parse_args_from(["anc", "set", "noise"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::AncSet(1, None));
+
+        let opts = parse_args_from(["anc", "set", "transparency", "2"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::AncSet(2, Some(2)));
+
+        let opts = parse_args_from(["anc", "set", "kapali"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::AncSet(0, None));
+
+        // Rejection of invalid level (>2)
+        let err = parse_args_from(["anc", "set", "noise", "3"]).unwrap_err();
+        assert!(err.contains("level must be 0-2"));
+
+        let err = parse_args_from(["anc", "set", "noise", "foo"]).unwrap_err();
+        assert!(err.contains("level must be 0-2"));
+
+        // Invalid mode
+        let err = parse_args_from(["anc", "set", "unknown"]).unwrap_err();
+        assert!(err.contains("usage: anc get | anc set"));
+    }
+
+    #[test]
+    fn parse_eq_commands() {
+        let opts = parse_args_from(["eq", "get"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::EqGet);
+
+        let opts = parse_args_from(["eq", "set", "0"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::EqSet(0));
+
+        let opts = parse_args_from(["eq", "set", "10"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::EqSet(10));
+
+        let opts = parse_args_from(["eq", "set", "13"]).unwrap();
+        assert_eq!(opts.cmd, Cmd::EqSet(13));
+
+        // 14 is out of range
+        let err = parse_args_from(["eq", "set", "14"]).unwrap_err();
+        assert!(err.contains("preset must be 0..13"));
+    }
+
+    #[test]
+    fn parse_flags_and_channel() {
+        let opts = parse_args_from(["--channel", "29", "--verbose", "anc", "get"]).unwrap();
+        assert_eq!(opts.channel, Some(29));
+        assert!(opts.verbose);
+        assert_eq!(opts.cmd, Cmd::AncGet);
+
+        let opts = parse_args_from(["--mac", "11:22:33:44:55:66", "battery"]).unwrap();
+        assert_eq!(opts.mac, Some("11:22:33:44:55:66".into()));
+        assert_eq!(opts.cmd, Cmd::Battery);
     }
 }

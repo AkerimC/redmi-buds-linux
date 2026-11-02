@@ -9,7 +9,7 @@ use std::sync::mpsc;
 use adw::prelude::*;
 use gtk::glib;
 
-use redmi_buds::settings::{self, Gesture, GestureBinding, EQ_PRESETS, GESTURE_ACTIONS};
+use redmi_buds::settings::{self, Gesture, GestureBinding, NoiseMode, EQ_PRESETS, GESTURE_ACTIONS};
 use worker::{Ev, Req, Snapshot};
 
 const APP_ID: &str = "io.github.creeperkafasi.RedmiBuds";
@@ -123,6 +123,8 @@ struct Ui {
     connect_btn: gtk::Button,
     cards: [BatteryCard; 3],
     eq: adw::ToggleGroup,
+    noise_group: adw::PreferencesGroup,
+    noise: adw::ToggleGroup,
     gestures_group: adw::PreferencesGroup,
     gesture_rows: RefCell<Vec<Rc<GestureRow>>>,
     find_target: adw::ToggleGroup,
@@ -151,15 +153,27 @@ impl Ui {
 
     fn set_eq(&self, eq: Option<u8>) {
         self.syncing.set(true);
-        match eq {
+        // The toggle list is per model; an unlisted value must not be forced
+        // into the group (libadwaita warns and shows nothing selected).
+        match eq.filter(|p| EQ_PRESETS.iter().any(|(id, _)| id == p)) {
             Some(p) => self.eq.set_active_name(Some(&p.to_string())),
             None => self.eq.set_active(gtk::INVALID_LIST_POSITION),
         }
         self.syncing.set(false);
     }
 
-    fn set_gestures(self: &Rc<Self>, bindings: &[GestureBinding]) {
+    /// Noise-control mode comes back as `(mode, level)`; only the mode has a
+    /// toggle. Unknown values simply leave the row empty.
+    fn set_noise(&self, anc: Option<(u8, u8)>) {
         self.syncing.set(true);
+        match anc.and_then(|(mode, _)| NoiseMode::from_id(mode)) {
+            Some(m) => self.noise.set_active_name(Some(&(m as u8).to_string())),
+            None => self.noise.set_active(gtk::INVALID_LIST_POSITION),
+        }
+        self.syncing.set(false);
+    }
+
+    fn set_gestures(self: &Rc<Self>, bindings: &[GestureBinding]) {        self.syncing.set(true);
         // Build rows once; afterwards only refresh selections.
         if self.gesture_rows.borrow().is_empty() {
             for b in bindings {
@@ -249,6 +263,7 @@ impl Ui {
             Ev::Connected(s) => self.show(s),
             Ev::Battery(b) => self.set_battery(&b),
             Ev::Eq(e) => self.set_eq(e),
+            Ev::Anc(a) => self.set_noise(a),
             Ev::Gestures(g) => {
                 self.set_gestures(&g);
                 self.notify("Gesture saved");
@@ -269,6 +284,8 @@ impl Ui {
         self.title.set_subtitle("Connected");
         self.set_battery(&s.battery);
         self.set_eq(s.eq);
+        self.noise_group.set_visible(s.has_anc);
+        self.set_noise(s.anc);
         self.set_gestures(&s.gestures);
         self.serial_row
             .set_subtitle(s.serial.as_deref().unwrap_or("Unknown"));
@@ -291,6 +308,7 @@ fn short_eq_name(id: u8) -> Option<&'static str> {
         5 => "Bass",
         6 => "Treble",
         7 => "Loud",
+        10 => "Personal",
         _ => return None,
     })
 }
@@ -350,6 +368,27 @@ fn build(app: &adw::Application, mac: String) {
     eq_scroll.set_propagate_natural_height(true);
     sound.add(&eq_scroll);
 
+    // Noise control
+    let noise_group = group("Noise control");
+    noise_group.set_description(Some("What the buds do with outside sound"));
+    noise_group.set_visible(false);
+    let noise = adw::ToggleGroup::new();
+    noise.add_css_class("round");
+    noise.set_hexpand(true);
+    for mode in NoiseMode::ALL {
+        noise.add(
+            adw::Toggle::builder()
+                .label(match mode {
+                    NoiseMode::Off => "Off",
+                    NoiseMode::Cancelling => "Noise cancelling",
+                    NoiseMode::Transparency => "Transparency",
+                })
+                .name((mode as u8).to_string())
+                .build(),
+        );
+    }
+    noise_group.add(&noise);
+
     // Gestures
     let gestures_group = group("Touch controls");
     gestures_group.set_description(Some("What happens when you tap your buds"));
@@ -397,7 +436,7 @@ fn build(app: &adw::Application, mac: String) {
     content.set_margin_start(12);
     content.set_margin_end(12);
     content.append(&battery_box);
-    for g in [&sound, &gestures_group, &find, &about] {
+    for g in [&sound, &noise_group, &gestures_group, &find, &about] {
         content.append(g);
     }
     let clamp = adw::Clamp::builder().maximum_size(640).child(&content).build();
@@ -458,6 +497,8 @@ fn build(app: &adw::Application, mac: String) {
         connect_btn,
         cards,
         eq,
+        noise_group,
+        noise,
         gestures_group,
         gesture_rows: RefCell::new(Vec::new()),
         find_target,
@@ -495,6 +536,18 @@ fn build(app: &adw::Application, mac: String) {
             }
             if let Some(p) = g.active_name().and_then(|n| n.parse().ok()) {
                 u.send(Req::SetEq(p));
+            }
+        });
+    }
+    {
+        let u = Rc::downgrade(&ui);
+        ui.noise.connect_active_name_notify(move |g| {
+            let Some(u) = u.upgrade() else { return };
+            if u.syncing.get() {
+                return;
+            }
+            if let Some(mode) = g.active_name().and_then(|n| n.parse().ok()) {
+                u.send(Req::SetAnc(mode));
             }
         });
     }
