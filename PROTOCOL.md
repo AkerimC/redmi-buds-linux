@@ -24,9 +24,15 @@ Bluetooth Classic RFCOMM. The app probes these SDP UUIDs in order:
 | Serial Port (SPP) | `00001101-0000-1000-8000-00805f9b34fb` | 1, 2, 5 |
 | XiaoAI | `00001101-0000-1000-8000-008584d01810` | — |
 
-**Verified:** the RCSP control channel is RFCOMM channel **6**, the one advertised
-under the `fd2d` UUID. The plain-SPP channels 1/2/5 are also open but are not the
-RCSP endpoint the app uses (`sdptool browse` lists all of them).
+**Verified:** on the Redmi Buds 6 Play the RCSP control channel is RFCOMM channel
+**6**, the one advertised under the `fd2d` UUID. On the Redmi Buds 6 Lite the same
+service is on channel **29** (`sdptool` is not needed to find it: the client just
+tries both). The plain-SPP channels 1/2/5 are also open on the 6 Play but are not
+the RCSP endpoint the app uses (`sdptool browse` lists all of them).
+
+Beware: not every channel that accepts an RFCOMM connection speaks RCSP. On the
+6 Lite, channel 12 connects and then stays silent — probing it by hand looks like
+a failed auth handshake rather than a closed channel.
 
 The device also exposes BLE (`0000af00-…`) and `df21fe2c-…`, used for the BLE-only
 buds. Audio runs independently over A2DP.

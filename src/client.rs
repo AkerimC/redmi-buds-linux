@@ -25,9 +25,18 @@ pub fn find_paired_buds() -> Option<String> {
     })
 }
 
-/// RFCOMM channels to try when SDP is unavailable. Channel 6 is what this
-/// device advertises for the MIUI UUID (`0000fd2d-…`).
-const CHANNEL_CANDIDATES: [u8; 6] = [6, 5, 4, 3, 2, 1];
+/// RFCOMM channels to try when SDP is unavailable, most likely first.
+///
+/// The MIUI UUID (`0000fd2d-…`) sits on channel **6** on the Redmi Buds 6 Play
+/// and on channel **29** on the Redmi Buds 6 Lite, so both have to be probed.
+/// 1–5 are the plain-SPP channels some JieLi firmwares expose; they answer
+/// immediately when absent.
+///
+/// Keep this list short: channels the firmware does not serve as RCSP can still
+/// accept the RFCOMM connection (channel 12 does on the 6 Lite) and then sit
+/// silent, so a wide sweep both wastes the connect timeout and can stop at a
+/// channel that never answers the auth challenge.
+const CHANNEL_CANDIDATES: [u8; 7] = [6, 29, 5, 4, 3, 2, 1];
 
 const CONNECT_TIMEOUT_MS: i32 = 15_000;
 const IO_TIMEOUT_MS: i32 = 8_000;

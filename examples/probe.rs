@@ -15,7 +15,7 @@ fn main() {
     let mac = std::env::var("MAC").ok().or_else(find_paired_buds).expect("no paired buds; set MAC=");
     let mut b = (0..10)
         .find_map(|_| {
-            Buds::connect(&mac, Some(6), verbose)
+            Buds::connect(&mac, None, verbose)
                 .map_err(|_| std::thread::sleep(std::time::Duration::from_millis(700)))
                 .ok()
         })
